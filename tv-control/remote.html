@@ -45,6 +45,19 @@
   .setup a { color: var(--accent); }
   #help { font-size: 14px; background: var(--bg); border-radius: 10px; padding: 10px 12px; }
   #help ol { margin: 6px 0 0; padding-left: 20px; }
+  .ghost { background: var(--key); color: var(--fg); }
+  .btn:disabled { opacity: .55; }
+  #scanStatus { font-size: 14px; color: var(--muted); margin: 0; }
+  #found { display: flex; flex-direction: column; gap: 8px; }
+  #found h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 6px 0 0; }
+  .pick {
+    font: inherit; text-align: left; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--key-press); border-radius: 10px; padding: 10px 12px;
+    display: flex; justify-content: space-between; gap: 10px; touch-action: manipulation;
+  }
+  .pick.likely { border-color: var(--ok); }
+  .pick span { color: var(--muted); font-size: 14px; }
+  .pick.likely span { color: var(--ok); }
   .note { font-size: 13px; color: var(--muted); margin: 0; }
 
   .cluster { display: grid; gap: 10px; }
@@ -78,6 +91,13 @@
         <input id="ip" inputmode="decimal" autocomplete="off" placeholder="192.168.1.50">
         <button class="btn" id="connect" type="button">Connect</button>
       </div>
+      <button class="btn ghost" id="scan" type="button">Find my TV</button>
+      <p id="scanStatus" hidden></p>
+      <div class="row" id="rangeRow" hidden>
+        <input id="range" inputmode="decimal" autocomplete="off" placeholder="192.168.1" aria-label="First three numbers of your network">
+        <button class="btn ghost" id="scanRange" type="button">Search</button>
+      </div>
+      <div id="found" hidden></div>
       <div id="help" hidden></div>
       <p class="note">Your phone must be on the same Wi-Fi as the TV, and the TV must be switched on.
         This page talks straight to the TV; nothing is sent anywhere else.</p>
@@ -243,6 +263,163 @@
       params: { Cmd: "Click", DataOfCmd: key, Option: "false", TypeOfRemote: "SendRemoteKey" }
     }));
   }
+
+  // ---- Finding the TV -------------------------------------------------
+  // A web page cannot list the devices on a network, so this knocks on every
+  // address and watches how each one fails. No answer at all means nothing is
+  // there. A quick refusal means a device is there. A TV takes slightly longer
+  // to refuse on its remote-control port than on an unused port, because it
+  // starts a secure handshake first; that difference is the hint used below.
+  var RANGES = ["192.168.1", "192.168.0", "192.168.29", "192.168.68", "192.168.2", "192.168.100",
+                "192.168.50", "192.168.86", "192.168.4", "192.168.31", "192.168.18", "192.168.8",
+                "192.168.178", "10.0.0"];
+  var PROBE_MS = 1500, scanning = false;
+  var scanBtn = $("scan"), scanStatus = $("scanStatus"), found = $("found"), rangeRow = $("rangeRow"), rangeInput = $("range");
+
+  function probe(ip, port) {
+    var ctl = new AbortController(), start = performance.now();
+    var timer = setTimeout(function () { ctl.abort(); }, PROBE_MS);
+    function result(state) { clearTimeout(timer); return { state: state, ms: performance.now() - start }; }
+    return fetch("https://" + ip + ":" + port + "/", { mode: "no-cors", cache: "no-store", signal: ctl.signal })
+      .then(function () { return result("open"); },
+            function () { return result(ctl.signal.aborted ? "dead" : "fast"); });
+  }
+
+  function say(text) { scanStatus.textContent = text; scanStatus.hidden = !text; }
+
+  function validRange(text) {
+    var parts = text.split(".");
+    return parts.length === 3 && parts.every(function (p) { return /^\d{1,3}$/.test(p) && +p <= 255; });
+  }
+
+  // A range is the phone's own network when its router answers and two
+  // addresses that are almost certainly unused stay silent. (Some routers
+  // refuse every address on networks they don't know, which would otherwise
+  // make every range look alive.)
+  function rangeIsLocal(range) {
+    return Promise.all([".1", ".254", ".237", ".219"].map(function (end) { return probe(range + end, 8002); }))
+      .then(function (r) {
+        var routerAnswers = r[0].state !== "dead" || r[1].state !== "dead";
+        var everythingAnswers = r[2].state !== "dead" && r[3].state !== "dead";
+        return routerAnswers && !everythingAnswers;
+      });
+  }
+
+  function sweep(range) {
+    var live = [], next = 1, total = 254;
+    function batch() {
+      if (next > total) return Promise.resolve(live);
+      var ends = [];
+      for (var i = 0; i < 32 && next <= total; i++) ends.push(next++);
+      say("Searching " + range + ".x — " + Math.min(next - 1, total) + " of " + total);
+      return Promise.all(ends.map(function (end) {
+        var ip = range + "." + end;
+        return probe(ip, 8002).then(function (r) { if (r.state !== "dead") live.push({ ip: ip, open: r.state === "open" }); });
+      })).then(batch);
+    }
+    return batch();
+  }
+
+  // Compare the remote-control port with an unused one, a few times, keeping
+  // the fastest of each so that a busy phone doesn't skew the result.
+  function score(device) {
+    if (device.open) { device.score = 1000; return Promise.resolve(device); }
+    var a = Infinity, b = Infinity, bSilent = false, round = 0;
+    function step() {
+      if (round++ >= 4) return Promise.resolve();
+      return probe(device.ip, 8002).then(function (r) {
+        if (r.state === "open") { a = -1; return; }
+        if (r.state === "fast") a = Math.min(a, r.ms);
+        if (bSilent) return step();
+        return probe(device.ip, 8003).then(function (r2) {
+          if (r2.state === "dead") bSilent = true; else b = Math.min(b, r2.ms);
+          return step();
+        });
+      });
+    }
+    return step().then(function () {
+      if (a === -1) device.score = 1000;
+      else if (a === Infinity) device.score = -1;
+      else if (b === Infinity) device.score = 500;
+      else device.score = a - b;
+      return device;
+    });
+  }
+
+  function scoreAll(devices) {
+    var i = 0;
+    function next() {
+      if (i >= devices.length) return Promise.resolve(devices);
+      say("Checking " + (i + 1) + " of " + devices.length + " devices");
+      return score(devices[i++]).then(next);
+    }
+    return next();
+  }
+
+  function pickButton(device, likely) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "pick" + (likely ? " likely" : "");
+    button.textContent = device.ip;
+    var tag = document.createElement("span");
+    tag.textContent = likely ? "Probably your TV" : "Use this";
+    button.appendChild(tag);
+    button.addEventListener("click", function () { ipInput.value = device.ip; connect(); });
+    return button;
+  }
+
+  function showFound(devices) {
+    found.textContent = "";
+    devices.sort(function (x, y) { return y.score - x.score; });
+    var likely = devices.filter(function (d) { return d.score >= 8; });
+    var others = devices.filter(function (d) { return d.score < 8; });
+    function heading(text) { var h = document.createElement("h2"); h.textContent = text; found.appendChild(h); }
+    likely.forEach(function (d) { found.appendChild(pickButton(d, true)); });
+    if (others.length) {
+      heading(likely.length ? "Other devices that answered" : "Devices that answered — try each");
+      others.forEach(function (d) { found.appendChild(pickButton(d, false)); });
+    }
+    found.hidden = !devices.length;
+    if (!devices.length) say("Nothing answered. Check the phone is on Wi-Fi and the TV is on.");
+    else if (likely.length) say("Tap your TV to connect.");
+    else say("Couldn't tell which one is the TV. A wrong one just says “Can't reach TV”.");
+  }
+
+  function findTv(givenRange) {
+    if (scanning) return;
+    scanning = true; scanBtn.disabled = true;
+    found.hidden = true; rangeRow.hidden = true; showHelp("");
+    say("Looking for your network…");
+
+    var typed = ipInput.value.trim().split(".").slice(0, 3).join(".");
+    var ranges = givenRange ? Promise.resolve([givenRange])
+      : validRange(typed) ? Promise.resolve([typed])
+      : Promise.all(RANGES.map(rangeIsLocal)).then(function (flags) {
+          return RANGES.filter(function (_, i) { return flags[i]; });
+        });
+
+    ranges.then(function (list) {
+      if (!list.length) {
+        say("Couldn't work out your network. On the phone, open Settings > Wi-Fi, tap the (i) next to your " +
+            "network and look at IP Address. Type its first three numbers here.");
+        rangeRow.hidden = false;
+        return;
+      }
+      var all = [];
+      function nextRange(i) {
+        if (i >= list.length) return scoreAll(all).then(showFound);
+        return sweep(list[i]).then(function (live) { all = all.concat(live); return nextRange(i + 1); });
+      }
+      return nextRange(0);
+    }).catch(function () { say("The search failed. Try again."); })
+      .then(function () { scanning = false; scanBtn.disabled = false; });
+  }
+
+  scanBtn.addEventListener("click", function () { findTv(); });
+  $("scanRange").addEventListener("click", function () {
+    var range = rangeInput.value.trim().replace(/\.$/, "");
+    if (validRange(range)) findTv(range); else say("Type three numbers separated by dots, like 192.168.1");
+  });
 
   ipInput.value = load("tv.ip");
   $("connect").addEventListener("click", connect);
