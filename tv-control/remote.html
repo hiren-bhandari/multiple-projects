@@ -14,6 +14,7 @@
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; }
   body {
     background: var(--bg); color: var(--fg);
@@ -104,8 +105,8 @@
         <input id="range" inputmode="decimal" autocomplete="off" placeholder="192.168.1" aria-label="First three numbers of your network">
         <button class="btn ghost" id="scanRange" type="button">Search</button>
       </div>
-      <div id="found" hidden></div>
       <div id="help" hidden></div>
+      <div id="found" hidden></div>
       <p class="note">Your phone must be on the same Wi-Fi as the TV, and the TV must be switched on.
         This page talks straight to the TV; nothing is sent anywhere else.</p>
     </div>
@@ -156,7 +157,10 @@
     dot.className = kind || "";
   }
 
-  function showHelp(html) { help.innerHTML = html; help.hidden = !html; if (html) setupBox.open = true; }
+  function showHelp(html) {
+    help.innerHTML = html; help.hidden = !html;
+    if (html) { setupBox.open = true; help.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
+  }
 
   function validIp(ip) {
     var parts = ip.split(".");
@@ -387,7 +391,9 @@
     tag.textContent = likely ? "Probably your TV" : "Use this";
     button.appendChild(label);
     button.appendChild(tag);
-    button.addEventListener("click", function () { ipInput.value = device.ip; connect(); });
+    button.addEventListener("click", function () {
+      ipInput.value = device.ip; found.hidden = true; say(""); connect();
+    });
     var check = document.createElement("a");
     check.className = "check";
     check.href = "http://" + device.ip + ":8001/api/v2/";
