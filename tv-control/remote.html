@@ -50,7 +50,14 @@
   #scanStatus { font-size: 14px; color: var(--muted); margin: 0; }
   #found { display: flex; flex-direction: column; gap: 8px; }
   #found h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 6px 0 0; }
+  .found-row { display: flex; gap: 8px; align-items: stretch; }
+  .check {
+    flex: none; display: flex; align-items: center; padding: 0 12px; font-size: 14px;
+    color: var(--accent); background: var(--bg); border: 1px solid var(--key-press);
+    border-radius: 10px; text-decoration: none;
+  }
   .pick {
+    flex: 1; min-width: 0;
     font: inherit; text-align: left; color: var(--fg); background: var(--bg);
     border: 1px solid var(--key-press); border-radius: 10px; padding: 10px 12px;
     display: flex; justify-content: space-between; gap: 10px; touch-action: manipulation;
@@ -205,6 +212,7 @@
         if (data.data && data.data.token) save("tv.token." + ip, String(data.data.token));
         connected = true;
         setStatus("Connected", "ok");
+        readName(ip).then(function (name) { if (name && connected) setStatus(name, "ok"); });
         showHelp("");
         setupBox.open = false;
         if (pendingKey) { sendKey(pendingKey); pendingKey = null; }
@@ -356,16 +364,46 @@
     return next();
   }
 
+  // The TV's name can only be read once this browser trusts the TV's
+  // certificate. Until then the "Show name" link opens the TV's own info page.
+  function readName(ip) {
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, 2500);
+    return fetch("https://" + ip + ":8002/api/v2/", { cache: "no-store", signal: ctl.signal })
+      .then(function (r) { return r.json(); })
+      .then(function (info) { clearTimeout(timer); return (info.device && info.device.name) || info.name || ""; },
+            function () { clearTimeout(timer); return ""; });
+  }
+
   function pickButton(device, likely) {
+    var row = document.createElement("div");
+    row.className = "found-row";
     var button = document.createElement("button");
     button.type = "button";
     button.className = "pick" + (likely ? " likely" : "");
-    button.textContent = device.ip;
+    var label = document.createElement("b");
+    label.textContent = device.ip;
     var tag = document.createElement("span");
     tag.textContent = likely ? "Probably your TV" : "Use this";
+    button.appendChild(label);
     button.appendChild(tag);
     button.addEventListener("click", function () { ipInput.value = device.ip; connect(); });
-    return button;
+    var check = document.createElement("a");
+    check.className = "check";
+    check.href = "http://" + device.ip + ":8001/api/v2/";
+    check.target = "_blank";
+    check.rel = "noopener";
+    check.textContent = "Show name";
+    row.appendChild(button);
+    row.appendChild(check);
+    readName(device.ip).then(function (name) {
+      if (!name) return;
+      label.textContent = name;
+      tag.textContent = device.ip;
+      button.classList.add("likely");
+      check.hidden = true;
+    });
+    return row;
   }
 
   function showFound(devices) {
@@ -381,7 +419,7 @@
     }
     found.hidden = !devices.length;
     if (!devices.length) say("Nothing answered. Check the phone is on Wi-Fi and the TV is on.");
-    else if (likely.length) say("Tap your TV to connect.");
+    else if (likely.length) say("Tap your TV to connect. “Show name” opens a page from that device; if it is the TV, its name appears after \"name\".");
     else say("Couldn't tell which one is the TV. A wrong one just says “Can't reach TV”.");
   }
 
