@@ -1,0 +1,8 @@
+[
+  {
+    "id": "example-1",
+    "text": "Example draft - replace me. Set approved to true when happy.",
+    "approved": false,
+    "scheduled_for": "2026-11-25T09:00:00"
+  }
+]
