@@ -8,6 +8,7 @@ top-level directory with its own README, dependencies and tooling.
 | Directory | What it is |
 | --- | --- |
 | [`tv-control/`](tv-control/) | Connect to my TV over the local network and operate it |
+| [`linkedin-toolkit/`](linkedin-toolkit/) | Post to LinkedIn and pull Ads/Page analytics via official APIs |
 
 ## Conventions
 
